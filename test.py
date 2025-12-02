@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import random
+import random, json
 from roboflow import Roboflow
 
 # ------------------------ CONFIG ------------------------
@@ -113,8 +113,9 @@ if masks is not None:
 
 # ------------------------ INIT ROBOFLOW ------------------------
 try:
-    rf = Roboflow(api_key="yvH4YKQIdWYxio5HiGTT")
-    rf_project = rf.workspace().project("crowd-detection-7suou-rwuwd")
+    secret = json.load(open('secret.json'))
+    rf = Roboflow(api_key=secret["roboflow"]["api_key"])
+    rf_project = rf.workspace().project(secret["roboflow"]["project_name"])
     rf_model = rf_project.version("1").model
 except Exception as e:
     rf_model = None

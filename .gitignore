@@ -5,3 +5,4 @@ runs/segment/val
 runs/segment/train3/*.png
 runs/segment/train3/*.jpg
 runs/segment/train3/*.csv
+secret*
