@@ -1,0 +1,29 @@
+{
+  "categories": [
+    {
+      "id": 0,
+      "name": "Danger Zone"
+    },
+    {
+      "id": 1,
+      "name": "Person"
+    },
+    {
+      "id": 2,
+      "name": "Safe Zone"
+    },
+    {
+      "id": 3,
+      "name": "Train"
+    },
+    {
+      "id": 4,
+      "name": "Yellow Line"
+    }
+  ],
+  "info": {
+    "year": 2025,
+    "version": "1.0",
+    "contributor": "Label Studio"
+  }
+}

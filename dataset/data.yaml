@@ -1,0 +1,11 @@
+train: images/train
+val: images/val
+
+nc: 5   # number of classes
+
+names:
+  - Danger Zone
+  - Person
+  - Safe Zone
+  - Train
+  - Yellow Line
