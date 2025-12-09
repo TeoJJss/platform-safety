@@ -6,4 +6,4 @@ model.train(
     epochs=80, augment=True
 )
 # "yolo train data=crop_data.yaml model=yolov8n.pt epochs=10 imgsz=640"
-# "yolo detect train model=path/to/best.pt data=path/to/new_data.yaml epochs=80 imgsz=640"
+# "yolo detect train model=runs\segment\train3\weights\best.pt data=dataset\data.yaml epochs=80 imgsz=640"
