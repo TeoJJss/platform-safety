@@ -11,3 +11,5 @@ output*/*
 *.log
 secret*
 dataset
+*.pth
+test*/

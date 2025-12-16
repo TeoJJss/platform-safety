@@ -6,7 +6,7 @@ from roboflow import Roboflow
 
 # ------------------------ CONFIG ------------------------
 yolo_model_path = r"runs\segment\train3\weights\best.pt"
-input_dir = r"input_images"
+input_dir = r"test_inp"
 output_dir = r"output_images"
 img_exts = (".jpg", ".jpeg", ".png")
 
