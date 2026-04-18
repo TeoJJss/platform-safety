@@ -6,7 +6,7 @@ import tempfile
 from rfdetr import RFDETRNano
 
 # ------------------------ CONFIG ------------------------
-yolo_model_path = r"runs\platform_seg_rf.pt"
+yolo_model_path = r"runs\platform-seg-yolo11.pt"
 input_dir = r"input_images"
 output_dir = r"output_images"
 img_exts = (".jpg", ".jpeg", ".png")
@@ -34,9 +34,9 @@ except Exception as e:
     print('Local RFDETRNano init failed or not available:', e)
 
 FIXED_COLORS = {
-    'danger zone': (100, 20, 100),   # Red
-    'yellow line': (0, 65, 100), # Orange/Yellow
-    'safe zone':   (100, 100, 0)  # Cyan
+    'danger zone': (50, 20, 50),   # Red
+    'yellow line': (0, 20, 50), # Orange/Yellow
+    'safe zone':   (50, 50, 0)  # Cyan
 }
 def process_image(img_path):
     print(f"Processing: {img_path}")
@@ -46,7 +46,7 @@ def process_image(img_path):
         return
     H_img, W_img = img.shape[:2]
 
-    results = model.predict(img_path, imgsz=736, conf=0.6, verbose=False, retina_masks=True)
+    results = model.predict(img_path, imgsz=800, conf=0.5, verbose=False, retina_masks=True)
     result = results[0]
 
     annotated_img = img.copy()

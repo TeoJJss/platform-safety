@@ -13,3 +13,4 @@ secret*
 dataset
 *.pth
 test*/
+tmp
