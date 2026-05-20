@@ -1,5 +1,5 @@
 yolov8n-seg.pt
-venv/
+venv*
 .git
 runs/segment/val
 runs/segment/train*/*.png
@@ -14,3 +14,4 @@ dataset
 *.pth
 test*/
 tmp
+__pycache__/
