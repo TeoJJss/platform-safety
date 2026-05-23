@@ -7,7 +7,7 @@ from queue import Empty, Queue
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-from rfdetr import RFDETRMedium
+from rfdetr import RFDETRNano
 from ultralytics import YOLO
 
 import tkinter as tk
@@ -33,7 +33,7 @@ class PlatformSafetyEngine:
         self.yellow_classes = {"yellow line"}
 
         self.seg_model = seg_model if seg_model is not None else YOLO(self.yolo_model_path)
-        self.crowd_model = crowd_model if crowd_model is not None else RFDETRMedium(pretrained_weights=self.rf_model_path)
+        self.crowd_model = crowd_model if crowd_model is not None else RFDETRNano(pretrained_weights=self.rf_model_path)
 
     @staticmethod
     def _normalize_masks(masks_obj, width, height):
@@ -578,7 +578,7 @@ class PlatformSafetyApp:
     def _load_models(self):
         try:
             yolo_path = "./runs/platform-seg-yolo11.pt"
-            rf_path = "./runs/crowd_detection_rf_med.pt"
+            rf_path = "./runs/crowd_rfdetr-nano.pt"
             model_results = {}
             errors = Queue()
 
@@ -590,7 +590,7 @@ class PlatformSafetyApp:
 
             def load_rf():
                 try:
-                    model_results["crowd_model"] = RFDETRMedium(pretrained_weights=rf_path)
+                    model_results["crowd_model"] = RFDETRNano(pretrained_weights=rf_path)
                 except Exception as exc:
                     errors.put(("RFDETR", exc))
 
@@ -611,6 +611,17 @@ class PlatformSafetyApp:
                 seg_model=model_results.get("seg_model"),
                 crowd_model=model_results.get("crowd_model"),
             )
+            
+            # Warmup pass: compile GPU kernels and initialize buffers
+            # This makes first real inference fast (eliminates compilation overhead)
+            try:
+                print("[MODEL WARMUP] Starting...")
+                warmup_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                _annotated, _metrics, _details = engine.process_frame(warmup_frame, show_zone_masks=False, imgsz=384)
+                print("[MODEL WARMUP] Done. ")
+            except Exception as e:
+                print(f"[MODEL WARMUP] Warning: warmup failed (non-critical): {e}")
+            
             self.ui_queue.put(("models_loaded", engine))
         except Exception as exc:
             self.ui_queue.put(("model_error", str(exc)))
@@ -699,21 +710,109 @@ class PlatformSafetyApp:
         self.log_box.insert("end", f"[{stamp}] {message}\n")
         self.log_box.see("end")
 
+    def _validate_input_file(self, file_path):
+        """Validate that the selected file is a valid image or video."""
+        try:
+            path_obj = Path(file_path)
+            
+            # Check if file exists
+            if not path_obj.exists():
+                messagebox.showerror("Input Error", "Selected file does not exist.")
+                self.log(f"Error: File not found - {file_path}")
+                return False
+            
+            # Check if file is readable
+            if not path_obj.is_file():
+                messagebox.showerror("Input Error", "Selected path is not a file.")
+                return False
+            
+            # Check file extension
+            extension = path_obj.suffix.lower()
+            valid_image_ext = {".jpg", ".jpeg", ".png"}
+            valid_video_ext = {".mp4"}
+            valid_extensions = valid_image_ext | valid_video_ext
+            
+            if extension not in valid_extensions:
+                messagebox.showerror(
+                    "Invalid File Type",
+                    f"Unsupported file format: {extension}\n\n"
+                    f"Supported images: {', '.join(sorted(valid_image_ext))}\n"
+                    f"Supported videos: {', '.join(sorted(valid_video_ext))}"
+                )
+                self.log(f"Error: Invalid file extension - {extension}")
+                return False
+            
+            # Validate file size (optional: prevent extremely large files)
+            file_size_mb = path_obj.stat().st_size / (1024 * 1024)
+            if file_size_mb > 2000:  # 2GB limit
+                messagebox.showwarning(
+                    "Large File Warning",
+                    f"File size is {file_size_mb:.1f} MB. Processing may be slow."
+                )
+            
+            # For videos: verify it can be opened
+            if extension in valid_video_ext:
+                cap = cv2.VideoCapture(file_path)
+                if not cap.isOpened():
+                    messagebox.showerror(
+                        "Invalid Video File",
+                        "Selected video file cannot be read. "
+                        "Please ensure it is a valid video file."
+                    )
+                    self.log(f"Error: Cannot open video file - {file_path}")
+                    return False
+                
+                # Try to read first frame
+                ok, frame = cap.read()
+                cap.release()
+                if not ok:
+                    messagebox.showerror(
+                        "Invalid Video File",
+                        "Selected video file is corrupted or cannot be decoded. "
+                        "Try converting it to MP4 format."
+                    )
+                    self.log(f"Error: Cannot read frames from video - {file_path}")
+                    return False
+            
+            # For images: verify it can be opened
+            elif extension in valid_image_ext:
+                img = cv2.imread(file_path)
+                if img is None:
+                    messagebox.showerror(
+                        "Invalid Image File",
+                        "Selected image file cannot be read. "
+                        "Please ensure it is a valid image file."
+                    )
+                    self.log(f"Error: Cannot open image file - {file_path}")
+                    return False
+            
+            return True
+        
+        except Exception as e:
+            messagebox.showerror("File Validation Error", f"Error validating file: {str(e)}")
+            self.log(f"Error: Exception during file validation - {str(e)}")
+            return False
+
     def select_input(self):
         self._stop_video_playback()
 
         path = filedialog.askopenfilename(
             title="Select image or video",
             filetypes=[
-                ("Supported", "*.jpg *.jpeg *.png *.bmp *.mp4 *.avi *.mov *.mkv"),
-                ("All files", "*.*"),
+                ("All Supported", "*.jpg *.jpeg *.png *.mp4"),
+                ("Supported Images", "*.jpg *.jpeg *.png"),
+                ("Supported Videos", "*.mp4")
             ],
         )
         if not path:
             return
 
+        # Validate file before processing
+        if not self._validate_input_file(path):
+            return
+
         self.current_input_path = path
-        self.current_is_video = Path(path).suffix.lower() in {".mp4", ".avi", ".mov", ".mkv"}
+        self.current_is_video = Path(path).suffix.lower() in {".mp4"}
         self.panel_zoom["input"] = 1.0
         self.panel_zoom["output"] = 1.0
         self.panel_images["input"] = None
