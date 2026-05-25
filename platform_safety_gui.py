@@ -7,8 +7,6 @@ from queue import Empty, Queue
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-from rfdetr import RFDETRNano
-from ultralytics import YOLO
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -32,8 +30,18 @@ class PlatformSafetyEngine:
         self.danger_classes = {"danger zone"}
         self.yellow_classes = {"yellow line"}
 
-        self.seg_model = seg_model if seg_model is not None else YOLO(self.yolo_model_path)
-        self.crowd_model = crowd_model if crowd_model is not None else RFDETRNano(pretrained_weights=self.rf_model_path)
+        if seg_model is None:
+            from ultralytics import YOLO
+
+            seg_model = YOLO(self.yolo_model_path)
+
+        if crowd_model is None:
+            from rfdetr import RFDETRNano
+
+            crowd_model = RFDETRNano(pretrained_weights=self.rf_model_path)
+
+        self.seg_model = seg_model
+        self.crowd_model = crowd_model
 
     @staticmethod
     def _normalize_masks(masks_obj, width, height):
@@ -174,6 +182,7 @@ class PlatformSafetyEngine:
 
         names = getattr(result, "names", None) or getattr(self.seg_model, "names", None)
         masks = self._normalize_masks(getattr(result, "masks", None), w_img, h_img)
+        zone_confidence_values = []
 
         if masks is not None:
             for i in range(masks.shape[0]):
@@ -187,6 +196,9 @@ class PlatformSafetyEngine:
                     conf_score = float(result.boxes.conf[i])
                 except Exception:
                     conf_score = None
+                
+                if conf_score is not None:
+                    zone_confidence_values.append(conf_score)
 
                 cls_name = ""
                 try:
@@ -238,13 +250,14 @@ class PlatformSafetyEngine:
                             color,
                             -1,
                         )
+                        text_color = (0, 0, 0) if cls_name == "train" else (255, 255, 255)
                         cv2.putText(
                             annotated_img,
                             label_text,
                             (tx, ty),
                             font,
                             font_scale,
-                            (255, 255, 255),
+                            text_color,
                             thickness,
                             cv2.LINE_AA,
                         )
@@ -343,6 +356,7 @@ class PlatformSafetyEngine:
             "zones_detected": zones_detected,
             "response_time_ms": elapsed_ms,
             "avg_confidence": float(np.mean(confidence_values)) if confidence_values else None,
+            "avg_zone_confidence": float(np.mean(zone_confidence_values)) if zone_confidence_values else None,
         }
 
         details = {
@@ -373,6 +387,7 @@ class PlatformSafetyApp:
         self.last_alert_level = None
         self.last_alert_message = ""
         self.alert_counter = 0
+        self.video_frames_since_last_alert = 999
         self.flash_after_id = None
         self.flash_on = False
 
@@ -391,9 +406,6 @@ class PlatformSafetyApp:
         self.output_dir = Path("output_images")
         self.output_video_dir = Path("output_video")
         self.report_dir = Path("output_reports")
-        self.output_dir.mkdir(exist_ok=True)
-        self.output_video_dir.mkdir(exist_ok=True)
-        self.report_dir.mkdir(exist_ok=True)
 
         self._build_ui()
         self._start_model_loading()
@@ -536,6 +548,7 @@ class PlatformSafetyApp:
             "yellow_zone_coverage_pct": tk.StringVar(value="0.00%"),
             "response_time_ms": tk.StringVar(value="0.00 ms"),
             "avg_confidence": tk.StringVar(value="N/A"),
+            "avg_zone_confidence": tk.StringVar(value="N/A"),
         }
 
         metric_labels = [
@@ -547,7 +560,8 @@ class PlatformSafetyApp:
             ("Danger Zone Coverage", "danger_zone_coverage_pct"),
             ("Yellow Zone Coverage", "yellow_zone_coverage_pct"),
             ("Response Time", "response_time_ms"),
-            ("Avg Confidence", "avg_confidence"),
+            ("Avg Confidence (Person)", "avg_confidence"),
+            ("Avg Confidence (Zone)", "avg_zone_confidence"),
         ]
 
         for title, key in metric_labels:
@@ -577,6 +591,9 @@ class PlatformSafetyApp:
 
     def _load_models(self):
         try:
+            from rfdetr import RFDETRNano
+            from ultralytics import YOLO
+
             yolo_path = "./runs/platform-seg-yolo11.pt"
             rf_path = "./runs/crowd_rfdetr-nano.pt"
             model_results = {}
@@ -840,6 +857,13 @@ class PlatformSafetyApp:
             self.output_panel.configure(image="", text="Labeled Preview")
             self.output_panel.image = None
             self.log("Image selected. Ready for analysis.")
+            try:
+                self.alert_counter = 0
+                self.alert_meta_var.set(f"Total alerts: {self.alert_counter}")
+                self.last_alert_level = None
+                self.last_alert_message = ""
+            except Exception:
+                pass
             self._auto_start_processing()
 
     def _auto_start_processing(self):
@@ -898,10 +922,6 @@ class PlatformSafetyApp:
 
         metrics["response_time_ms"] = elapsed_ms
 
-        out_name = f"annotated_{Path(self.current_input_path).name}"
-        out_path = self.output_dir / out_name
-        cv2.imwrite(str(out_path), annotated)
-
         self.ui_queue.put(
             (
                 "image_done",
@@ -909,7 +929,6 @@ class PlatformSafetyApp:
                     "original": frame,
                     "annotated": annotated,
                     "metrics": metrics,
-                    "output_path": str(out_path),
                 },
             )
         )
@@ -925,12 +944,12 @@ class PlatformSafetyApp:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        out_name = f"annotated_{Path(self.current_input_path).stem}.mp4"
-        out_path = self.output_video_dir / out_name
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
-
         frame_idx = 0
+        # Reset video alert cooldown so first dangerous frame can alert immediately
+        try:
+            self.video_frames_since_last_alert = 999
+        except Exception:
+            pass
         danger_frames = 0
         zone_frames = 0
         max_people_in_danger = 0
@@ -969,8 +988,6 @@ class PlatformSafetyApp:
             frame_latency_ms = (time.perf_counter() - frame_start) * 1000.0
             total_latency_ms += frame_latency_ms
 
-            writer.write(annotated)
-
             total_people_detected += metrics["people_detected"]
             total_people_in_danger += metrics["people_in_danger"]
             total_people_warning += metrics["people_on_warning"]
@@ -999,7 +1016,6 @@ class PlatformSafetyApp:
                 )
 
         cap.release()
-        writer.release()
 
         processed_frames = max(frame_idx, 1)
         avg_latency_ms = total_latency_ms / processed_frames
@@ -1033,7 +1049,6 @@ class PlatformSafetyApp:
                 "video_done",
                 {
                     "metrics": summary,
-                    "output_path": str(out_path),
                 },
             )
         )
@@ -1071,18 +1086,23 @@ class PlatformSafetyApp:
                     self.current_original = payload["original"]
                     self.current_annotated = payload["annotated"]
                     self.current_metrics = payload["metrics"]
-                    self.output_path = payload["output_path"]
 
                     self._show_on_panel(self.input_panel, self.current_original, panel_key="input")
                     self._show_on_panel(self.output_panel, self.current_annotated, panel_key="output")
                     self._update_metrics(self.current_metrics)
+                    # Force alert evaluation for this new image (don't reuse previous message)
+                    try:
+                        self.last_alert_level = None
+                        self.last_alert_message = ""
+                    except Exception:
+                        pass
                     alert_level = self._refresh_alert_status(self.current_metrics)
                     self._notify_missing_zones(self.current_metrics)
 
                     if alert_level == "safe":
                         self.status_var.set("Image analysis complete")
                     self.stop_btn.configure(state="disabled")
-                    self.log(f"Image processed. Output saved to {self.output_path}")
+                    self.log("Image processing complete")
 
                 elif msg_type == "video_progress":
                     frame_idx = payload["frame_idx"]
@@ -1094,7 +1114,8 @@ class PlatformSafetyApp:
                         self._show_on_panel(self.input_panel, self.current_original, panel_key="input")
                     self._show_on_panel(self.output_panel, self.current_annotated, panel_key="output")
                     self._update_metrics(self.current_metrics)
-                    alert_level = self._refresh_alert_status(self.current_metrics)
+                    # For video progress, pass source so alert logic can throttle sounds
+                    alert_level = self._refresh_alert_status(self.current_metrics, source="video", frame_idx=frame_idx)
 
                     if alert_level == "safe":
                         if total_frames > 0:
@@ -1104,8 +1125,6 @@ class PlatformSafetyApp:
 
                 elif msg_type == "video_done":
                     self.current_metrics = payload["metrics"]
-                    self.output_path = payload["output_path"]
-                    fast_mode = bool(payload.get("fast_mode", False))
                     self._update_metrics(self.current_metrics)
                     alert_level = self._refresh_alert_status(self.current_metrics)
                     self._notify_missing_zones(self.current_metrics)
@@ -1118,7 +1137,6 @@ class PlatformSafetyApp:
                             self.status_var.set("Video analysis complete")
                         self.log("Video analysis completed.")
 
-                    self.log(f"Output video saved to {self.output_path}")
                     self.stop_btn.configure(state="disabled")
 
         except Empty:
@@ -1126,7 +1144,10 @@ class PlatformSafetyApp:
 
         self.root.after(30, self._poll_queue)
 
-    def _refresh_alert_status(self, metrics):
+    def _refresh_alert_status(self, metrics, source=None, frame_idx=None):
+        """Update UI alert state. If called from video frames (source=='video'),
+        throttle playing the danger siren to at most once every 3 frames.
+        """
         danger = metrics.get("people_in_danger", 0)
         warning = metrics.get("people_on_warning", 0)
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -1134,15 +1155,37 @@ class PlatformSafetyApp:
         if danger > 0:
             message = f"CRITICAL ALERT: {danger} passenger(s) in danger zone"
             is_new_event = self.last_alert_level != "danger" or self.last_alert_message != message
+
+            # Decide whether to play the siren
+            play_siren = False
+            if source == "video":
+                cooldown = getattr(self, "video_frames_since_last_alert", 999)
+                if is_new_event or cooldown >= 200:
+                    play_siren = True
+                    self.video_frames_since_last_alert = 0
+                else:
+                    try:
+                        self.video_frames_since_last_alert = int(self.video_frames_since_last_alert) + 1
+                    except Exception:
+                        self.video_frames_since_last_alert = 1
+            else:
+                play_siren = is_new_event
+
             self.last_alert_level = "danger"
             self.last_alert_message = message
             self._set_alert_visual("danger")
             self.status_var.set(message)
             self.alert_var.set(message)
-            if is_new_event:
-                self.alert_counter += 1
+
+            if play_siren:
+                try:
+                    self.alert_counter += 1
+                except Exception:
+                    self.alert_counter = 1
                 self._play_emergency_warning_sound()
                 self.log(message)
+
+            # Show last event and total alerts
             self.alert_meta_var.set(f"Last event: {now_str} | Total alerts: {self.alert_counter}")
             return "danger"
         elif warning > 0:
@@ -1154,7 +1197,10 @@ class PlatformSafetyApp:
             self.status_var.set(message)
             self.alert_var.set(message)
             if is_new_event:
-                self.alert_counter += 1
+                try:
+                    self.alert_counter += 1
+                except Exception:
+                    self.alert_counter = 1
                 self.log(message)
             self.alert_meta_var.set(f"Last event: {now_str} | Total alerts: {self.alert_counter}")
             return "warning"
@@ -1198,6 +1244,7 @@ class PlatformSafetyApp:
         self.metric_vars["yellow_zone_coverage_pct"].set(f"{metrics.get('yellow_zone_coverage_pct', 0.0):.2f}%")
         self.metric_vars["response_time_ms"].set(f"{metrics.get('response_time_ms', 0.0):.2f} ms")
         self.metric_vars["avg_confidence"].set(fmt_ratio("avg_confidence"))
+        self.metric_vars["avg_zone_confidence"].set(fmt_ratio("avg_zone_confidence"))
 
     @staticmethod
     def _fit_for_display(bgr_image, max_w=700, max_h=500, zoom=1.0):
