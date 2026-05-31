@@ -18,6 +18,8 @@ except Exception:
 
 
 class PlatformSafetyEngine:
+    """Engine that runs zone segmentation and person detection.
+    """
     def __init__(self, yolo_model_path, rf_model_path, seg_model=None, crowd_model=None):
         self.yolo_model_path = yolo_model_path
         self.rf_model_path = rf_model_path
@@ -45,6 +47,8 @@ class PlatformSafetyEngine:
 
     @staticmethod
     def _normalize_masks(masks_obj, width, height):
+        """Normalize different mask object formats into a 3D boolean array.
+        """
         if masks_obj is None:
             return None
 
@@ -68,6 +72,10 @@ class PlatformSafetyEngine:
 
     @staticmethod
     def _parse_rf_predictions(rf_resp):
+        """Parse RF-DETR predictions into a list of simple dicts.
+
+        Each dict has keys: x,y,width,height,class,confidence
+        """
         preds = []
 
         if isinstance(rf_resp, dict):
@@ -121,6 +129,9 @@ class PlatformSafetyEngine:
 
     @staticmethod
     def _is_person_prediction(pred):
+        """
+        Return True if prediction represents a person.
+        """
         cls = pred.get("class", pred.get("label", None))
         if cls is None:
             return False
@@ -162,6 +173,7 @@ class PlatformSafetyEngine:
         return inter_area / union
 
     def process_frame(self, frame, show_zone_masks=True, imgsz=800):
+        # record start time for profiling
         start = time.perf_counter()
         h_img, w_img = frame.shape[:2]
         annotated_img = frame.copy()
@@ -182,8 +194,10 @@ class PlatformSafetyEngine:
 
         names = getattr(result, "names", None) or getattr(self.seg_model, "names", None)
         masks = self._normalize_masks(getattr(result, "masks", None), w_img, h_img)
+        # collect confidence scores for detected zone masks
         zone_confidence_values = []
 
+        # if segmentation masks present, process each mask
         if masks is not None:
             for i in range(masks.shape[0]):
                 try:
@@ -221,13 +235,14 @@ class PlatformSafetyEngine:
                 elif cls_name in self.yellow_classes:
                     yellow_mask = np.logical_or(yellow_mask, mask_i)
 
+                # optionally draw mask overlay and label on the image
                 if show_zone_masks:
                     color = self.fixed_colors.get(cls_name, (255, 255, 255))
                     overlay = annotated_img.copy()
                     overlay[mask_i] = color
                     annotated_img = cv2.addWeighted(overlay, 0.6, annotated_img, 0.4, 0)
 
-                    # Place a readable label close to the mask centroid.
+                    # Place a readable label near the mask centroid if mask exists
                     if np.any(mask_i):
                         ys, xs = np.where(mask_i)
                         cx = int(np.mean(xs))
@@ -594,7 +609,7 @@ class PlatformSafetyApp:
             from rfdetr import RFDETRNano
             from ultralytics import YOLO
 
-            yolo_path = "./runs/platform-seg-yolo11.pt"
+            yolo_path = "./runs/platform-seg-yolo11_nano.pt"
             rf_path = "./runs/crowd_rfdetr-nano.pt"
             model_results = {}
             errors = Queue()
@@ -634,7 +649,8 @@ class PlatformSafetyApp:
             try:
                 print("[MODEL WARMUP] Starting...")
                 warmup_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                _annotated, _metrics, _details = engine.process_frame(warmup_frame, show_zone_masks=False, imgsz=384)
+                # Run a warmup frame
+                engine.process_frame(warmup_frame, show_zone_masks=False, imgsz=384)
                 print("[MODEL WARMUP] Done. ")
             except Exception as e:
                 print(f"[MODEL WARMUP] Warning: warmup failed (non-critical): {e}")
