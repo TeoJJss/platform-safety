@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
@@ -25,9 +26,9 @@ class PlatformSafetyEngine:
         self.rf_model_path = rf_model_path
 
         self.fixed_colors = {
-            "danger zone": (50, 20, 50),
-            "yellow line": (0, 20, 50),
-            "safe zone": (50, 50, 0),
+            "danger zone": (50, 20, 50),      # Dark red
+            "yellow line": (0, 20, 50),       # Dark orange
+            "safe zone": (50, 50, 0),         # Dark green
         }
         self.danger_classes = {"danger zone"}
         self.yellow_classes = {"yellow line"}
@@ -172,15 +173,8 @@ class PlatformSafetyEngine:
             return 0.0
         return inter_area / union
 
-    def process_frame(self, frame, show_zone_masks=True, imgsz=800):
-        # record start time for profiling
-        start = time.perf_counter()
-        h_img, w_img = frame.shape[:2]
-        annotated_img = frame.copy()
-
-        danger_mask = np.zeros((h_img, w_img), dtype=bool)
-        yellow_mask = np.zeros((h_img, w_img), dtype=bool)
-
+    def _run_seg_inference(self, frame, imgsz=800):
+        """Run YOLO segmentation inference in a thread."""
         seg_start = time.perf_counter()
         result = self.seg_model.predict(
             frame,
@@ -190,7 +184,35 @@ class PlatformSafetyEngine:
             retina_masks=True,
         )[0]
         seg_infer_ms = (time.perf_counter() - seg_start) * 1000.0
+        return result, seg_infer_ms
+
+    def _run_rf_inference(self, frame):
+        """Run RF-DETR person detection inference in a thread."""
+        rf_start = time.perf_counter()
+        rf_resp = self.crowd_model.predict(frame, confidence=40, overlap=30)
+        rf_infer_ms = (time.perf_counter() - rf_start) * 1000.0
+        return rf_resp, rf_infer_ms
+
+    def process_frame(self, frame, show_zone_masks=True, imgsz=800):
+        # record start time for profiling
+        start = time.perf_counter()
+        h_img, w_img = frame.shape[:2]
+        annotated_img = frame.copy()
+
+        danger_mask = np.zeros((h_img, w_img), dtype=bool)
+        yellow_mask = np.zeros((h_img, w_img), dtype=bool)
+
+        # Run YOLO and RF-DETR inferences in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            seg_future = executor.submit(self._run_seg_inference, frame, imgsz)
+            rf_future = executor.submit(self._run_rf_inference, frame)
+            
+            # Wait for both to complete
+            result, seg_infer_ms = seg_future.result()
+            rf_resp, rf_infer_ms = rf_future.result()
+        
         print(f"[YOLO ZONE SEGMENTATION] Inference time: {seg_infer_ms:.2f} ms")
+        print(f"[RFDETR PERSON DETECTION] Inference time: {rf_infer_ms:.2f} ms")
 
         names = getattr(result, "names", None) or getattr(self.seg_model, "names", None)
         masks = self._normalize_masks(getattr(result, "masks", None), w_img, h_img)
@@ -276,11 +298,6 @@ class PlatformSafetyEngine:
                             thickness,
                             cv2.LINE_AA,
                         )
-
-        rf_start = time.perf_counter()
-        rf_resp = self.crowd_model.predict(frame, confidence=40, overlap=30)
-        rf_infer_ms = (time.perf_counter() - rf_start) * 1000.0
-        print(f"[RFDETR PERSON DETECTION] Inference time: {rf_infer_ms:.2f} ms")
         preds = self._parse_rf_predictions(rf_resp)
         person_preds = [p for p in preds if self._is_person_prediction(p)]
 
