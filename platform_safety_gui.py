@@ -730,13 +730,6 @@ class PlatformSafetyApp:
 
     def _play_emergency_warning_sound(self):
         def _siren():
-            if winsound is None:
-                try:
-                    self.root.bell()
-                except Exception:
-                    pass
-                return
-
             pattern = [
                 (950, 160),
                 (1250, 160),
@@ -751,7 +744,6 @@ class PlatformSafetyApp:
                         self.root.bell()
                     except Exception:
                         pass
-                    break
 
         threading.Thread(target=_siren, daemon=True).start()
 
@@ -1379,6 +1371,8 @@ class PlatformSafetyApp:
 
 def main():
     root = tk.Tk()
+    app_icon = tk.PhotoImage(file='icon.png')
+    root.iconphoto(False, app_icon)
     app = PlatformSafetyApp(root)
     root.mainloop()
 
