@@ -15,3 +15,7 @@ dataset
 test*/
 tmp
 __pycache__/
+build/
+dist/
+*.spec
+tmp*

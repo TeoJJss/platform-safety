@@ -67,7 +67,12 @@ source venv3.11/bin/activate
 pip install -r requirements.txt
 ```
 
-**Note**: This may take several minutes as it includes PyTorch, Ultralytics, and other ML libraries. For GPU support, ensure you have the appropriate CUDA toolkit installed.
+**Note**: This may take several minutes as it includes PyTorch, Ultralytics, and other ML libraries.  
+
+### 4. View the AI models    
+The model development (annotation, training etc) was done at <b>Roboflow</b>.  
+Refer to `dataset.txt` for the dataset and models.  
+
 
 ## Quick Start
 
