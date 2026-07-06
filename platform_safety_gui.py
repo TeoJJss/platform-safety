@@ -1226,6 +1226,7 @@ class PlatformSafetyApp:
                     self.alert_counter += 1
                 except Exception:
                     self.alert_counter = 1
+                self._play_emergency_warning_sound()
                 self.log(message)
             self.alert_meta_var.set(f"Last event: {now_str} | Total alerts: {self.alert_counter}")
             return "warning"
